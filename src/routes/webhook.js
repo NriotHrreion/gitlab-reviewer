@@ -1,5 +1,4 @@
 const express = require('express');
-const { getMRDiff, postMRComment } = require('../services/gitlab');
 const { runClaudeReview } = require('../services/claude');
 
 const router = express.Router();
@@ -55,22 +54,10 @@ router.post('/webhook', async (req, res) => {
   try {
     console.log(`[WEBHOOK] Processing MR !${iid} (${source_branch} → ${target_branch})`);
 
-    // Fetch diff
-    const diff = await getMRDiff(projectId, iid);
+    // Run Claude review with MCP tools
+    await runClaudeReview(projectId, iid);
 
-    if (!diff) {
-      console.log(`[WEBHOOK] No diff fetched for MR !${iid}`);
-      return res.status(200).json({ message: 'No changes in MR' });
-    }
-
-    // Run Claude review
-    const review = await runClaudeReview(diff);
-
-    // Post comment
-    const commentBody = `## Claude Code Review\n\n${review}`;
-    await postMRComment(projectId, iid, commentBody);
-
-    res.status(200).json({ message: 'Review posted successfully' });
+    res.status(200).json({ message: 'Review triggered successfully' });
   } catch (error) {
     console.error(`[WEBHOOK] Error processing MR !${iid}:`, error.message);
     res.status(500).json({ error: 'Review failed' });

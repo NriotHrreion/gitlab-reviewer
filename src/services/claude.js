@@ -2,19 +2,26 @@ const { spawn } = require('child_process');
 
 const CLAUDE_TIMEOUT_MS = 120000; // 2 minutes
 
-function runClaudeReview(diff) {
+function runClaudeReview(projectPath, mrIid) {
   return new Promise((resolve, reject) => {
-    const prompt = `You are a code reviewer. Review the following merge request diff and provide a concise code review focusing on:
-- Potential bugs
-- Code quality issues
-- Security concerns
-- Performance problems
-- Missing error handling
+    const prompt = `You are a code reviewer for a GitLab merge request.
 
-Diff:
-${diff}
+The merge request is:
+- Project: ${projectPath}
+- MR IID: ${mrIid}
 
-Provide your review in markdown format. Be thorough but focused on the most important issues.`;
+Your task:
+1. First, check what GitLab MCP tools are available to you
+2. Use the GitLab MCP tool to fetch the merge request diff
+3. Review the code changes for:
+   - Potential bugs
+   - Code quality issues
+   - Security concerns
+   - Performance problems
+   - Missing error handling
+4. Post your review as a comment on the merge request using the GitLab MCP tool
+
+Provide a thorough code review in markdown format. Be critical but constructive.`;
 
     const claude = spawn('claude', ['--print'], {
       stdio: ['pipe', 'pipe', 'pipe'],
