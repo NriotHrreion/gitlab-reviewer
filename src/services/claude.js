@@ -21,11 +21,11 @@ Provide your review in markdown format. Be thorough but focused on the most impo
       env: { ...process.env },
     });
 
-    let stdout = '';
+    const chunks = [];
     let stderr = '';
 
     const timeout = setTimeout(() => {
-      claude.kill();
+      claude.kill('SIGKILL');
       reject(new Error('Claude review timed out'));
     }, CLAUDE_TIMEOUT_MS);
 
@@ -33,7 +33,7 @@ Provide your review in markdown format. Be thorough but focused on the most impo
     claude.stdin.end();
 
     claude.stdout.on('data', (data) => {
-      stdout += data.toString();
+      chunks.push(data);
     });
 
     claude.stderr.on('data', (data) => {
@@ -43,7 +43,7 @@ Provide your review in markdown format. Be thorough but focused on the most impo
     claude.on('close', (code) => {
       clearTimeout(timeout);
       if (code === 0) {
-        resolve(stdout.trim());
+        resolve(chunks.join('').trim());
       } else {
         console.error(`[CLAUDE] stderr: ${stderr}`);
         reject(new Error(`Claude exited with code ${code}`));
