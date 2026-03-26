@@ -20,14 +20,17 @@ router.post('/webhook', async (req, res) => {
   }
 
   const { object_kind, project, object_attributes } = req.body;
+  console.log("[WEBHOOK] Received MR event:", object_attributes);
 
   // Only handle merge request events
   if (object_kind !== 'merge_request') {
+    console.log(`[WEBHOOK] Ignored: not a merge request`);
     return res.status(200).json({ message: 'Ignored: not a merge request' });
   }
 
   // Validate object_attributes structure
   if (!object_attributes || typeof object_attributes.state !== 'string') {
+    console.log(`[WEBHOOK] Invalid merge request data`);
     return res.status(400).json({ error: 'Invalid merge request data' });
   }
 
@@ -35,6 +38,7 @@ router.post('/webhook', async (req, res) => {
 
   // Only review when MR is opened or updated
   if (!['opened', 'updated'].includes(state)) {
+    console.log(`[WEBHOOK] Ignored: MR not opened or updated`);
     return res.status(200).json({ message: 'Ignored: MR not opened or updated' });
   }
 
@@ -46,6 +50,7 @@ router.post('/webhook', async (req, res) => {
 
   // Validate project structure
   if (!project || typeof project.path_with_namespace !== 'string') {
+    console.log(`[WEBHOOK] Invalid project data`);
     return res.status(400).json({ error: 'Invalid project data' });
   }
 
