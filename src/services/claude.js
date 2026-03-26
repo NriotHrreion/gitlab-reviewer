@@ -23,10 +23,18 @@ Your task:
 
 Provide a thorough code review in markdown format. Be critical but constructive.`;
 
-    const claude = spawn('claude', ['--print'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
-    });
+    const claude = spawn(
+      'claude',
+      [
+        '--print',
+        '--allowedTools', 'mcp__gitlab__*',
+        '--verbose',
+      ],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, "NODE_OPTIONS": "--use-system-ca" },
+      }
+    );
 
     const chunks = [];
     let stderr = '';
@@ -41,16 +49,18 @@ Provide a thorough code review in markdown format. Be critical but constructive.
 
     claude.stdout.on('data', (data) => {
       chunks.push(data);
+      process.stdout.write(data);
     });
 
     claude.stderr.on('data', (data) => {
       stderr += data.toString();
+      process.stderr.write(data);
     });
 
     claude.on('close', (code) => {
       clearTimeout(timeout);
       if (code === 0) {
-        resolve(chunks.join('').trim());
+        resolve(Buffer.concat(chunks).toString('utf8').trim());
       } else {
         console.error(`[CLAUDE] stderr: ${stderr}`);
         reject(new Error(`Claude exited with code ${code}`));
