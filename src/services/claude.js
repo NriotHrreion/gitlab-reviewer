@@ -1,28 +1,36 @@
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const CLAUDE_TIMEOUT_MS = 120000; // 2 minutes
 
-function runClaudeReview(projectPath, mrIid) {
+const PROMPTS_DIR = path.join(__dirname, '..', '..', 'prompts');
+
+function getPromptLanguage() {
+  return process.env.CLAUDE_LANGUAGE || 'en';
+}
+
+function loadPrompt(templateName) {
+  const lang = getPromptLanguage();
+  const templatePath = path.join(PROMPTS_DIR, `${templateName}-${lang}.md`);
+
+  if (!fs.existsSync(templatePath)) {
+    throw new Error(`Prompt template not found: ${templatePath}`);
+  }
+
+  return fs.readFileSync(templatePath, 'utf8');
+}
+
+function renderPrompt(template, variables) {
+  let result = template;
+  for (const [key, value] of Object.entries(variables)) {
+    result = result.replace(new RegExp(`{{${key}}}`, 'g'), value);
+  }
+  return result;
+}
+
+function runClaudeProcess(prompt) {
   return new Promise((resolve, reject) => {
-    const prompt = `You are a code reviewer for a GitLab merge request.
-
-The merge request is:
-- Project: ${projectPath}
-- MR IID: ${mrIid}
-
-Your task:
-1. First, check what GitLab MCP tools are available to you
-2. Use the GitLab MCP tool to fetch the merge request diff
-3. Review the code changes for:
-   - Potential bugs
-   - Code quality issues
-   - Security concerns
-   - Performance problems
-   - Missing error handling
-4. Post your review as a comment on the merge request using the GitLab MCP tool
-
-Provide a thorough code review in markdown format. Be critical but constructive.`;
-
     const claude = spawn(
       'claude',
       [
@@ -41,7 +49,7 @@ Provide a thorough code review in markdown format. Be critical but constructive.
 
     const timeout = setTimeout(() => {
       claude.kill('SIGKILL');
-      reject(new Error('Claude review timed out'));
+      reject(new Error('Claude process timed out'));
     }, CLAUDE_TIMEOUT_MS);
 
     claude.stdin.write(prompt);
@@ -74,4 +82,26 @@ Provide a thorough code review in markdown format. Be critical but constructive.
   });
 }
 
-module.exports = { runClaudeReview };
+function runClaudeMentionReply(projectPath, mrIid, discussionId, noteId, noteContent) {
+  const template = loadPrompt('mention-reply');
+  const prompt = renderPrompt(template, {
+    projectPath,
+    mrIid,
+    mentionUsername: process.env.CLAUDE_MENTION_USERNAME,
+    discussionId,
+    noteId,
+    noteContent,
+  });
+  return runClaudeProcess(prompt);
+}
+
+function runClaudeReview(projectPath, mrIid) {
+  const template = loadPrompt('code-review');
+  const prompt = renderPrompt(template, {
+    projectPath,
+    mrIid,
+  });
+  return runClaudeProcess(prompt);
+}
+
+module.exports = { runClaudeReview, runClaudeMentionReply };

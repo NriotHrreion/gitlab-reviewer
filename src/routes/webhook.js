@@ -1,11 +1,25 @@
 const express = require('express');
-const { runClaudeReview } = require('../services/claude');
+const { runClaudeReview, runClaudeMentionReply } = require('../services/claude');
 
 const router = express.Router();
 
 // Validate TARGET_BRANCHES is set at startup
 if (!process.env.TARGET_BRANCHES) {
   throw new Error('TARGET_BRANCHES environment variable is required');
+}
+
+// Validate CLAUDE_MENTION_USERNAME is set at startup
+if (!process.env.CLAUDE_MENTION_USERNAME) {
+  throw new Error('CLAUDE_MENTION_USERNAME environment variable is required');
+}
+
+// Validate CLAUDE_LANGUAGE is set at startup
+if (!process.env.CLAUDE_LANGUAGE) {
+  throw new Error('CLAUDE_LANGUAGE environment variable is required');
+}
+
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function isTargetBranch(targetBranch) {
@@ -22,10 +36,53 @@ router.post('/webhook', async (req, res) => {
   const { object_kind, project, object_attributes } = req.body;
   console.log("[WEBHOOK] Received MR event:", object_attributes);
 
-  // Only handle merge request events
+  // Only handle merge request and note events
+  if (object_kind === 'note') {
+    // Handle mention-triggered reply
+    const { noteable_type, noteable_iid, note, id: noteId, discussion_id: discussionId } = object_attributes;
+
+    // Validate object_attributes structure
+    if (!object_attributes || typeof noteable_type !== 'string') {
+      console.log(`[WEBHOOK] Invalid note data`);
+      return res.status(400).json({ error: 'Invalid note data' });
+    }
+
+    // Only handle comments on MRs
+    if (noteable_type !== 'MergeRequest') {
+      console.log(`[WEBHOOK] Ignored: not a merge request comment`);
+      return res.status(200).json({ message: 'Ignored: not a merge request comment' });
+    }
+
+    // Validate project structure
+    if (!project || typeof project.path_with_namespace !== 'string') {
+      console.log(`[WEBHOOK] Invalid project data`);
+      return res.status(400).json({ error: 'Invalid project data' });
+    }
+
+    const projectId = project.path_with_namespace;
+    const mentionPattern = new RegExp(`@${escapeRegExp(process.env.CLAUDE_MENTION_USERNAME)}`);
+
+    // Check if comment mentions claude
+    if (!mentionPattern.test(note)) {
+      console.log(`[WEBHOOK] Ignored: no mention of @${process.env.CLAUDE_MENTION_USERNAME}`);
+      return res.status(200).json({ message: 'Ignored: no mention' });
+    }
+
+    console.log(`[WEBHOOK] Mention detected in MR !${noteable_iid}, triggering reply`);
+
+    try {
+      await runClaudeMentionReply(projectId, noteable_iid, discussionId, noteId, note);
+      res.status(200).json({ message: 'Reply triggered successfully' });
+    } catch (error) {
+      console.error(`[WEBHOOK] Error processing mention in MR !${noteable_iid}:`, error.message);
+      res.status(500).json({ error: 'Reply failed' });
+    }
+    return;
+  }
+
   if (object_kind !== 'merge_request') {
-    console.log(`[WEBHOOK] Ignored: not a merge request`);
-    return res.status(200).json({ message: 'Ignored: not a merge request' });
+    console.log(`[WEBHOOK] Ignored: not a merge request or note event`);
+    return res.status(200).json({ message: 'Ignored: not a merge request or note event' });
   }
 
   // Validate object_attributes structure
