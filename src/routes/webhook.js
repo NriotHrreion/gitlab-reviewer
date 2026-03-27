@@ -1,5 +1,5 @@
 const express = require('express');
-const { runClaudeReview, runClaudeMentionReply } = require('../services/claude');
+const { runClaudeReview, runClaudeMentionReply, runClaudeIssueFix } = require('../services/claude');
 
 const router = express.Router();
 
@@ -17,6 +17,7 @@ if (!process.env.CLAUDE_MENTION_USERNAME) {
 if (!process.env.CLAUDE_LANGUAGE) {
   throw new Error('CLAUDE_LANGUAGE environment variable is required');
 }
+
 
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -36,7 +37,7 @@ router.post('/webhook', async (req, res) => {
   const { object_kind, project, object_attributes } = req.body;
   console.log("[WEBHOOK] Received MR event:", object_attributes);
 
-  // Only handle merge request and note events
+  // Only handle merge request, note, and issue events
   if (object_kind === 'note') {
     // Handle mention-triggered reply
     const { noteable_type, noteable_iid, note, id: noteId, discussion_id: discussionId } = object_attributes;
@@ -76,6 +77,56 @@ router.post('/webhook', async (req, res) => {
     } catch (error) {
       console.error(`[WEBHOOK] Error processing mention in MR !${noteable_iid}:`, error.message);
       res.status(500).json({ error: 'Reply failed' });
+    }
+    return;
+  }
+
+  if (object_kind === 'issue') {
+    // Handle issue-triggered sandbox review
+    const { state, action, iid, title, description } = object_attributes;
+    const assignees = req.body.assignees || [];
+
+    // Only process opened issues with action "open" or "update"
+    if (!['open', 'reopen'].includes(action)) {
+      console.log(`[WEBHOOK] Ignored: issue action is "${action}", expected "open" or "update"`);
+      return res.status(200).json({ message: 'Ignored: issue action not open or update' });
+    }
+
+    // Validate object_attributes structure
+    if (!object_attributes || typeof state !== 'string') {
+      console.log(`[WEBHOOK] Invalid issue data`);
+      return res.status(400).json({ error: 'Invalid issue data' });
+    }
+
+    // Only process opened issues
+    if (state !== 'opened') {
+      console.log(`[WEBHOOK] Ignored: issue not opened`);
+      return res.status(200).json({ message: 'Ignored: issue not opened' });
+    }
+
+    // Check if issue is assigned to claude
+    const isAssignedToClaude = (assignees || []).some(a => a.username === process.env.CLAUDE_MENTION_USERNAME);
+    if (!isAssignedToClaude) {
+      console.log(`[WEBHOOK] Ignored: issue not assigned to @${process.env.CLAUDE_MENTION_USERNAME}`);
+      return res.status(200).json({ message: 'Ignored: issue not assigned to claude' });
+    }
+
+    // Validate project structure
+    if (!project || typeof project.path_with_namespace !== 'string' || typeof project.web_url !== 'string') {
+      console.log(`[WEBHOOK] Invalid project data`);
+      return res.status(400).json({ error: 'Invalid project data' });
+    }
+
+    const projectPath = project.path_with_namespace;
+    const projectUrl = project.web_url;
+
+    try {
+      console.log(`[WEBHOOK] Processing issue #${iid} (${title})`);
+      await runClaudeIssueFix(projectPath, projectUrl, iid, title, description || '');
+      res.status(200).json({ message: 'Issue fix triggered successfully' });
+    } catch (error) {
+      console.error(`[WEBHOOK] Error processing issue #${iid}:`, error.message);
+      res.status(500).json({ error: 'Issue fix failed' });
     }
     return;
   }

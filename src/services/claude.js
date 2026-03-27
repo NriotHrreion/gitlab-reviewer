@@ -2,9 +2,26 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const CLAUDE_TIMEOUT_MS = 120000; // 2 minutes
+const CLAUDE_TIMEOUT_MS = 600000; // 10 minutes
 
 const PROMPTS_DIR = path.join(__dirname, '..', '..', 'prompts');
+const WORKSPACES_DIR = path.join(__dirname, '..', '..', 'workspaces');
+
+function sanitizeProjectPath(projectPath) {
+  return projectPath.replace(/\//g, '-');
+}
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function cleanupDir(dirPath) {
+  if (fs.existsSync(dirPath)) {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  }
+}
 
 function getPromptLanguage() {
   return process.env.CLAUDE_LANGUAGE || 'en';
@@ -29,31 +46,66 @@ function renderPrompt(template, variables) {
   return result;
 }
 
-function runClaudeProcess(prompt) {
+function runClaudeProcess(prompt, options = {}) {
+  const { cwd, allowedTools } = options;
+
   return new Promise((resolve, reject) => {
+    const args = ['--print', '--verbose'];
+    if (allowedTools === '*') {
+      // All built-in tools + all MCP tools
+      args.push('--allowedTools', 'Read,Write,Edit,Bash,Grep,Glob,WebFetch,Bash(git:*),mcp__gitlab__*');
+    } else if (allowedTools) {
+      args.push('--allowedTools', allowedTools);
+    } else {
+      args.push('--allowedTools', 'mcp__gitlab__*');
+    }
+
     const claude = spawn(
       'claude',
-      [
-        '--print',
-        '--allowedTools', 'mcp__gitlab__*',
-        '--verbose',
-      ],
+      args,
       {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, "NODE_OPTIONS": "--use-system-ca" },
+        cwd: cwd || undefined,
       }
     );
 
     const chunks = [];
     let stderr = '';
+    let settled = false;
+
+    const settle = (fn) => {
+      if (!settled) {
+        settled = true;
+        try {
+          fn();
+        } catch (settleErr) {
+          console.error('[CLAUDE] settle error:', settleErr.message);
+        }
+      }
+    };
 
     const timeout = setTimeout(() => {
-      claude.kill('SIGKILL');
-      reject(new Error('Claude process timed out'));
+      try {
+        claude.kill('SIGKILL');
+      } catch (killErr) {
+        // Process may have already exited
+        console.error('[CLAUDE] Claude process kill error:', killErr.message);
+      }
+      console.error('[CLAUDE] Claude process timed out');
+      settle(() => reject(new Error('Claude process timed out')));
     }, CLAUDE_TIMEOUT_MS);
 
-    claude.stdin.write(prompt);
-    claude.stdin.end();
+    try {
+      claude.stdin.write(prompt);
+    } catch (writeErr) {
+      console.error('[CLAUDE] stdin write error:', writeErr.message);
+    }
+    try {
+      claude.stdin.end();
+    } catch (endErr) {
+      // Ignore - may already be closed
+    }
 
     claude.stdout.on('data', (data) => {
       chunks.push(data);
@@ -68,16 +120,15 @@ function runClaudeProcess(prompt) {
     claude.on('close', (code) => {
       clearTimeout(timeout);
       if (code === 0) {
-        resolve(Buffer.concat(chunks).toString('utf8').trim());
+        settle(() => resolve(Buffer.concat(chunks).toString('utf8').trim()));
       } else {
-        console.error(`[CLAUDE] stderr: ${stderr}`);
-        reject(new Error(`Claude exited with code ${code}`));
+        settle(() => reject(new Error(`Claude exited with code ${code}`)));
       }
     });
 
     claude.on('error', (err) => {
       clearTimeout(timeout);
-      reject(err);
+      settle(() => reject(err));
     });
   });
 }
@@ -92,7 +143,7 @@ function runClaudeMentionReply(projectPath, mrIid, discussionId, noteId, noteCon
     noteId,
     noteContent,
   });
-  return runClaudeProcess(prompt);
+  return runClaudeProcess(prompt, { allowedTools: 'mcp__gitlab__*' });
 }
 
 function runClaudeReview(projectPath, mrIid) {
@@ -101,7 +152,38 @@ function runClaudeReview(projectPath, mrIid) {
     projectPath,
     mrIid,
   });
-  return runClaudeProcess(prompt);
+  return runClaudeProcess(prompt, { allowedTools: 'mcp__gitlab__*' });
 }
 
-module.exports = { runClaudeReview, runClaudeMentionReply };
+function runClaudeIssueFix(projectPath, projectUrl, issueIid, issueTitle, issueDescription) {
+  const template = loadPrompt('issue-fix');
+  const prompt = renderPrompt(template, {
+    projectPath,
+    projectUrl,
+    issueIid,
+    issueTitle,
+    issueDescription,
+  });
+
+  // Workspace path: workspaces/<sanitized-projectPath>/<issueIid>/
+  const workspacePath = path.join(WORKSPACES_DIR, sanitizeProjectPath(projectPath), String(issueIid));
+
+  console.log(`[CLAUDE] Creating workspace at ${workspacePath}`);
+  ensureDir(workspacePath);
+
+  const runProcess = runClaudeProcess(prompt, { cwd: workspacePath, allowedTools: '*' });
+
+  // Always clean up workspace when process finishes
+  runProcess.finally(() => {
+    try {
+      console.log(`[CLAUDE] Cleaning up workspace at ${workspacePath}`);
+      cleanupDir(workspacePath);
+    } catch (cleanupErr) {
+      console.error(`[CLAUDE] Workspace cleanup failed:`, cleanupErr.message);
+    }
+  });
+
+  return runProcess;
+}
+
+module.exports = { runClaudeReview, runClaudeMentionReply, runClaudeIssueFix };

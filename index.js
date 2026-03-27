@@ -1,6 +1,11 @@
 require('dotenv').config();
 const { createServer } = require('./src/server');
 
+// Prevent unhandled rejections from crashing the server
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[SERVER] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const port = process.env.PORT || 5010;
 
 (async () => {
